@@ -1,0 +1,322 @@
+import json
+import asyncio
+from typing import Dict, Any, List, Optional
+from agno.workflow.v2 import Workflow, Step
+from agno.workflow.v2.types import StepInput, StepOutput
+
+from agents.think_agent import ThinkAgent
+from agents.plan_agent import PlanAgent
+from agents.execute_agent import ExecuteAgent
+from agents.review_agent import ReviewAgent
+from tools.toolmanager.tool_manager import ToolManager
+
+
+class TPERWorkflow(Workflow):
+    """TPER Framework Workflow using Agno 2.0 Workflow system"""
+    
+    def __init__(self, **kwargs):
+        # Initialize tool manager and context
+        self.tool_manager = ToolManager()
+        self.max_iterations = 3
+        self.current_iteration = 0
+        self.context = {}
+        
+        # Create agents
+        self.think_agent = ThinkAgent.create()
+        self.plan_agent = PlanAgent.create()
+        self.review_agent = ReviewAgent.create()
+        
+        # Define custom step functions
+        def think_step_function(step_input: StepInput) -> StepOutput:
+            """Think phase: Analyze and decompose the problem"""
+            print("🤔 THINK Phase: Analyzing problem...")
+            
+            user_input = step_input.message or ""
+            response = self.think_agent.run(
+                f"Analyze this request and break it down into actionable steps: {user_input}"
+            )
+            
+            try:
+                # Parse JSON response from Think Agent
+                analysis = json.loads(response.content)
+                self.context['analysis'] = analysis
+                print(f"✅ Think phase completed: {len(analysis.get('tasks', []))} tasks identified")
+                return StepOutput(content=analysis, success=True)
+            except json.JSONDecodeError:
+                # Fallback if JSON parsing fails
+                fallback_analysis = {
+                    "problem_analysis": response.content,
+                    "tasks": [
+                        {
+                            "step_number": 1,
+                            "description": "Process user request",
+                            "expected_output": "Completed task",
+                            "operation_type": "other"
+                        }
+                    ],
+                    "dependencies": [],
+                    "success_criteria": "Task completed successfully"
+                }
+                self.context['analysis'] = fallback_analysis
+                print("✅ Think phase completed with fallback analysis")
+                return StepOutput(content=fallback_analysis, success=True)
+        
+        def plan_step_function(step_input: StepInput) -> StepOutput:
+            """Plan phase: Create execution strategy"""
+            print("📋 PLAN Phase: Creating execution strategy...")
+            
+            analysis = step_input.previous_step_content or {}
+            if isinstance(analysis, str):
+                try:
+                    analysis = json.loads(analysis)
+                except:
+                    analysis = self.context.get('analysis', {})
+            
+            # Get available tools information
+            tool_descriptions = self.tool_manager.get_tool_descriptions()
+            
+            plan_input = f"""
+            Based on this analysis: {json.dumps(analysis, indent=2)}
+            
+            Available tools and their capabilities:
+            {json.dumps(tool_descriptions, indent=2)}
+            
+            Create a detailed execution plan mapping each task to appropriate tools.
+            """
+            
+            response = self.plan_agent.run(plan_input)
+            self.context['plan'] = response.content
+            print("✅ Plan phase completed")
+            return StepOutput(content=response.content, success=True)
+        
+        def execute_step_function(step_input: StepInput) -> StepOutput:
+            """Execute phase: Run the plan with dynamic tool selection (synchronous wrapper)"""
+            print("⚡ EXECUTE Phase: Running execution plan...")
+            
+            try:
+                # Run the async execution in a synchronous context
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    result = loop.run_until_complete(self._async_execute_step(step_input))
+                    return result
+                finally:
+                    loop.close()
+            except Exception as e:
+                print(f"❌ Execute phase failed: {e}")
+                return StepOutput(
+                    content=f"Execution failed: {str(e)}", 
+                    success=False
+                )
+        
+        def review_step_function(step_input: StepInput) -> StepOutput:
+            """Review phase: Evaluate results and decide next steps"""
+            print("🔍 REVIEW Phase: Evaluating results...")
+            
+            analysis = self.context.get('analysis', {})
+            execution_result = step_input.previous_step_content or ""
+            user_input = getattr(step_input, 'workflow_message', None) or step_input.message or ""
+            
+            review_input = f"""
+            Review the execution results against the original request:
+            
+            Original Request: {user_input}
+            
+            Analysis: {json.dumps(analysis, indent=2)}
+            
+            Execution Results: {execution_result}
+            
+            Provide your review and decision (COMPLETE/RETRY/ADJUST).
+            """
+            
+            response = self.review_agent.run(review_input)
+            
+            # Extract decision from review
+            content = response.content.lower()
+            if "decision: complete" in content:
+                decision = "COMPLETE"
+            elif "decision: retry" in content:
+                decision = "RETRY"
+            elif "decision: adjust" in content:
+                decision = "ADJUST"
+            else:
+                decision = "COMPLETE"  # Default
+            
+            review_result = {
+                "decision": decision,
+                "review_content": response.content
+            }
+            
+            self.context['review'] = review_result
+            print(f"✅ Review phase completed - Decision: {decision}")
+            return StepOutput(content=review_result, success=True)
+        
+        # Create workflow steps using Step with executor
+        steps = [
+            Step(
+                name="think",
+                description="Analyze and decompose the problem",
+                executor=think_step_function
+            ),
+            Step(
+                name="plan", 
+                description="Create execution strategy",
+                executor=plan_step_function
+            ),
+            Step(
+                name="execute",
+                description="Run the plan with dynamic tool selection", 
+                executor=execute_step_function
+            ),
+            Step(
+                name="review",
+                description="Evaluate results and decide next steps",
+                executor=review_step_function
+            )
+        ]
+        
+        # Initialize the parent Workflow
+        super().__init__(
+            name=kwargs.get("name", "TPER_Workflow"),
+            description=kwargs.get("description", "Think-Plan-Execute-Review Framework"),
+            steps=steps,
+            **{k: v for k, v in kwargs.items() if k not in ["name", "description"]}
+        )
+    
+    async def _async_execute_step(self, step_input: StepInput) -> StepOutput:
+        """Async execution logic for the execute step"""
+        analysis = self.context.get('analysis', {})
+        plan = step_input.previous_step_content or ""
+        
+        # Extract operation types from analysis
+        operation_types = []
+        for task in analysis.get("tasks", []):
+            op_type = task.get("operation_type", "other")
+            if op_type not in operation_types:
+                operation_types.append(op_type)
+        
+        # Get appropriate tools for execution
+        tools = await self.tool_manager.get_tools_for_execution(operation_types)
+        
+        # Create Execute Agent with dynamic tools
+        execute_agent = ExecuteAgent.create(tools=tools)
+        
+        execution_input = f"""
+        Execute this plan step by step:
+        
+        Original Analysis:
+        {json.dumps(analysis, indent=2)}
+        
+        Execution Plan:
+        {plan}
+        
+        Use the available tools to complete each step and provide detailed execution logs.
+        """
+        
+        response = execute_agent.run(execution_input)
+        self.context['execution_result'] = response.content
+        print("✅ Execute phase completed")
+        return StepOutput(content=response.content, success=True)
+    
+    async def run_tper_cycle(self, user_input: str) -> str:
+        """Run a single TPER cycle and return result"""
+        try:
+            # Run the workflow
+            response = self.run(message=user_input)
+            
+            # Get the review decision
+            review = self.context.get('review', {})
+            decision = review.get('decision', 'COMPLETE')
+            
+            if decision == "COMPLETE":
+                return self._format_final_result()
+            else:
+                return decision  # Return RETRY or ADJUST for iteration control
+                
+        except Exception as e:
+            print(f"❌ Error in TPER cycle: {e}")
+            return f"ERROR: {str(e)}"
+    
+    async def run_with_iterations(self, user_input: str) -> str:
+        """Run the complete TPER workflow with iterations"""
+        print(f"🚀 Starting TPER Workflow for: {user_input}")
+        print("=" * 60)
+        
+        self.current_iteration = 0
+        
+        while self.current_iteration < self.max_iterations:
+            self.current_iteration += 1
+            print(f"\n🔄 Iteration {self.current_iteration}/{self.max_iterations}")
+            print("-" * 40)
+            
+            try:
+                result = await self.run_tper_cycle(user_input)
+                
+                if result == "COMPLETE" or result.startswith("# TPER Workflow Results"):
+                    print("✅ Task completed successfully!")
+                    return result if result.startswith("#") else self._format_final_result()
+                
+                elif result == "RETRY":
+                    print("🔄 Retrying execution with same plan...")
+                    continue
+                
+                elif result == "ADJUST":
+                    print("🔧 Adjusting plan for next iteration...")
+                    # Clear plan to force re-planning
+                    if 'plan' in self.context:
+                        del self.context['plan']
+                    continue
+                
+                elif result.startswith("ERROR"):
+                    print(f"❌ {result}")
+                    continue
+                    
+            except Exception as e:
+                print(f"❌ Error in iteration {self.current_iteration}: {e}")
+                if self.current_iteration >= self.max_iterations:
+                    break
+                continue
+        
+        # If we reach here, max iterations exceeded
+        return self._format_incomplete_result()
+    
+    def _format_final_result(self) -> str:
+        """Format the final successful result"""
+        execution_result = self.context.get('execution_result', 'No execution result')
+        review = self.context.get('review', {})
+        
+        return f"""
+# TPER Workflow Results
+
+## Final Execution Result
+{execution_result}
+
+## Review Summary
+{review.get('review_content', 'No review available')}
+
+**Status**: Completed successfully in {self.current_iteration} iteration(s)
+"""
+    
+    def _format_incomplete_result(self) -> str:
+        """Format result when max iterations reached"""
+        execution_result = self.context.get('execution_result', 'No execution completed')
+        review = self.context.get('review', {})
+        
+        return f"""
+# TPER Workflow Results
+
+## Status
+Maximum iterations ({self.max_iterations}) reached without completion.
+
+## Last Execution Result
+{execution_result}
+
+## Last Review
+{review.get('review_content', 'No review completed')}
+
+**Status**: Incomplete - manual intervention may be required
+"""
+    
+    async def cleanup(self):
+        """Cleanup workflow resources"""
+        await self.tool_manager.cleanup()

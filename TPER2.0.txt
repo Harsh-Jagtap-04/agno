@@ -1014,14 +1014,13 @@ This TPER Framework provides a robust, scalable foundation for building complex 
 
 
 ------------------------------------------------------------------------------------
-Fixed Workflow Implementation Using Agno 2.0
+Fixed TPER Workflow Implementation
 workflows/tper_workflow.py
 import json
 import asyncio
 from typing import Dict, Any, List, Optional
-from agno.workflow.v2 import Workflow, Step, StepOutput
-from agno.agent import Agent
-from agno.models.openai import OpenAIChat
+from agno.workflow.v2 import Workflow, Step
+from agno.workflow.v2.types import StepInput, StepOutput
 
 from agents.think_agent import ThinkAgent
 from agents.plan_agent import PlanAgent
@@ -1034,31 +1033,33 @@ class TPERWorkflow(Workflow):
     """TPER Framework Workflow using Agno 2.0 Workflow system"""
     
     def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+        # Initialize tool manager and context
         self.tool_manager = ToolManager()
         self.max_iterations = 3
         self.current_iteration = 0
         self.context = {}
-    
-    def think_step(self, user_input: str) -> Step:
-        """Think phase: Analyze and decompose the problem"""
         
-        def think_logic(step_output: StepOutput) -> StepOutput:
+        # Create agents
+        self.think_agent = ThinkAgent.create()
+        self.plan_agent = PlanAgent.create()
+        self.review_agent = ReviewAgent.create()
+        
+        # Define custom step functions
+        def think_step_function(step_input: StepInput) -> StepOutput:
+            """Think phase: Analyze and decompose the problem"""
             print("🤔 THINK Phase: Analyzing problem...")
             
-            think_agent = ThinkAgent.create()
-            response = think_agent.run(
+            user_input = step_input.message or ""
+            response = self.think_agent.run(
                 f"Analyze this request and break it down into actionable steps: {user_input}"
             )
             
             try:
                 # Parse JSON response from Think Agent
                 analysis = json.loads(response.content)
-                step_output.content = analysis
-                step_output.success = True
                 self.context['analysis'] = analysis
                 print(f"✅ Think phase completed: {len(analysis.get('tasks', []))} tasks identified")
-                return step_output
+                return StepOutput(content=analysis, success=True)
             except json.JSONDecodeError:
                 # Fallback if JSON parsing fails
                 fallback_analysis = {
@@ -1074,30 +1075,24 @@ class TPERWorkflow(Workflow):
                     "dependencies": [],
                     "success_criteria": "Task completed successfully"
                 }
-                step_output.content = fallback_analysis
-                step_output.success = True
                 self.context['analysis'] = fallback_analysis
                 print("✅ Think phase completed with fallback analysis")
-                return step_output
+                return StepOutput(content=fallback_analysis, success=True)
         
-        return Step(
-            name="think",
-            description="Analyze and decompose the problem",
-            function=think_logic
-        )
-    
-    def plan_step(self) -> Step:
-        """Plan phase: Create execution strategy"""
-        
-        def plan_logic(step_output: StepOutput) -> StepOutput:
+        def plan_step_function(step_input: StepInput) -> StepOutput:
+            """Plan phase: Create execution strategy"""
             print("📋 PLAN Phase: Creating execution strategy...")
             
-            analysis = self.context.get('analysis', {})
+            analysis = step_input.previous_step_content or {}
+            if isinstance(analysis, str):
+                try:
+                    analysis = json.loads(analysis)
+                except:
+                    analysis = self.context.get('analysis', {})
             
             # Get available tools information
             tool_descriptions = self.tool_manager.get_tool_descriptions()
             
-            plan_agent = PlanAgent.create()
             plan_input = f"""
             Based on this analysis: {json.dumps(analysis, indent=2)}
             
@@ -1107,27 +1102,17 @@ class TPERWorkflow(Workflow):
             Create a detailed execution plan mapping each task to appropriate tools.
             """
             
-            response = plan_agent.run(plan_input)
-            step_output.content = response.content
-            step_output.success = True
+            response = self.plan_agent.run(plan_input)
             self.context['plan'] = response.content
             print("✅ Plan phase completed")
-            return step_output
+            return StepOutput(content=response.content, success=True)
         
-        return Step(
-            name="plan",
-            description="Create execution strategy",
-            function=plan_logic
-        )
-    
-    def execute_step(self) -> Step:
-        """Execute phase: Run the plan with dynamic tool selection"""
-        
-        async def execute_logic(step_output: StepOutput) -> StepOutput:
+        async def execute_step_function(step_input: StepInput) -> StepOutput:
+            """Execute phase: Run the plan with dynamic tool selection"""
             print("⚡ EXECUTE Phase: Running execution plan...")
             
             analysis = self.context.get('analysis', {})
-            plan = self.context.get('plan', '')
+            plan = step_input.previous_step_content or ""
             
             # Extract operation types from analysis
             operation_types = []
@@ -1155,28 +1140,18 @@ class TPERWorkflow(Workflow):
             """
             
             response = execute_agent.run(execution_input)
-            step_output.content = response.content
-            step_output.success = True
             self.context['execution_result'] = response.content
             print("✅ Execute phase completed")
-            return step_output
+            return StepOutput(content=response.content, success=True)
         
-        return Step(
-            name="execute",
-            description="Run the plan with dynamic tool selection",
-            function=execute_logic
-        )
-    
-    def review_step(self, user_input: str) -> Step:
-        """Review phase: Evaluate results and decide next steps"""
-        
-        def review_logic(step_output: StepOutput) -> StepOutput:
+        def review_step_function(step_input: StepInput) -> StepOutput:
+            """Review phase: Evaluate results and decide next steps"""
             print("🔍 REVIEW Phase: Evaluating results...")
             
             analysis = self.context.get('analysis', {})
-            execution_result = self.context.get('execution_result', '')
+            execution_result = step_input.previous_step_content or ""
+            user_input = step_input.workflow_message or step_input.message or ""
             
-            review_agent = ReviewAgent.create()
             review_input = f"""
             Review the execution results against the original request:
             
@@ -1189,7 +1164,7 @@ class TPERWorkflow(Workflow):
             Provide your review and decision (COMPLETE/RETRY/ADJUST).
             """
             
-            response = review_agent.run(review_input)
+            response = self.review_agent.run(review_input)
             
             # Extract decision from review
             content = response.content.lower()
@@ -1207,51 +1182,62 @@ class TPERWorkflow(Workflow):
                 "review_content": response.content
             }
             
-            step_output.content = review_result
-            step_output.success = True
             self.context['review'] = review_result
             print(f"✅ Review phase completed - Decision: {decision}")
-            return step_output
+            return StepOutput(content=review_result, success=True)
         
-        return Step(
-            name="review",
-            description="Evaluate results and decide next steps",
-            function=review_logic
+        # Create workflow steps using Step with executor
+        steps = [
+            Step(
+                name="think",
+                description="Analyze and decompose the problem",
+                executor=think_step_function
+            ),
+            Step(
+                name="plan", 
+                description="Create execution strategy",
+                executor=plan_step_function
+            ),
+            Step(
+                name="execute",
+                description="Run the plan with dynamic tool selection", 
+                executor=execute_step_function
+            ),
+            Step(
+                name="review",
+                description="Evaluate results and decide next steps",
+                executor=review_step_function
+            )
+        ]
+        
+        # Initialize the parent Workflow
+        super().__init__(
+            name=kwargs.get("name", "TPER_Workflow"),
+            description=kwargs.get("description", "Think-Plan-Execute-Review Framework"),
+            steps=steps,
+            **{k: v for k, v in kwargs.items() if k not in ["name", "description"]}
         )
     
-    async def run_tper_cycle(self, user_input: str) -> Dict[str, Any]:
-        """Run a single TPER cycle"""
-        
-        # Create workflow steps
-        think_step = self.think_step(user_input)
-        plan_step = self.plan_step()
-        execute_step = self.execute_step()
-        review_step = self.review_step(user_input)
-        
-        # Execute steps in sequence
-        steps = [think_step, plan_step, execute_step, review_step]
-        
-        for step in steps:
-            step_output = StepOutput()
+    async def run_tper_cycle(self, user_input: str) -> str:
+        """Run a single TPER cycle and return result"""
+        try:
+            # Run the workflow
+            response = self.run(message=user_input)
             
-            if asyncio.iscoroutinefunction(step.function):
-                step_output = await step.function(step_output)
+            # Get the review decision
+            review = self.context.get('review', {})
+            decision = review.get('decision', 'COMPLETE')
+            
+            if decision == "COMPLETE":
+                return self._format_final_result()
             else:
-                step_output = step.function(step_output)
-            
-            if not step_output.success:
-                return {
-                    "success": False,
-                    "error": f"Step {step.name} failed",
-                    "context": self.context
-                }
-        
-        return {
-            "success": True,
-            "context": self.context
-        }
+                return decision  # Return RETRY or ADJUST for iteration control
+                
+        except Exception as e:
+            print(f"❌ Error in TPER cycle: {e}")
+            return f"ERROR: {str(e)}"
     
-    async def run(self, user_input: str) -> str:
+    async def run_with_iterations(self, user_input: str) -> str:
         """Run the complete TPER workflow with iterations"""
         print(f"🚀 Starting TPER Workflow for: {user_input}")
         print("=" * 60)
@@ -1264,34 +1250,27 @@ class TPERWorkflow(Workflow):
             print("-" * 40)
             
             try:
-                # Run TPER cycle
                 result = await self.run_tper_cycle(user_input)
                 
-                if not result["success"]:
-                    print(f"❌ Cycle failed: {result.get('error', 'Unknown error')}")
-                    continue
-                
-                review = self.context.get('review', {})
-                decision = review.get('decision', 'COMPLETE')
-                
-                print(f"\n📊 Review Decision: {decision}")
-                
-                if decision == "COMPLETE":
+                if result == "COMPLETE" or result.startswith("# TPER Workflow Results"):
                     print("✅ Task completed successfully!")
-                    return self._format_final_result()
+                    return result if result.startswith("#") else self._format_final_result()
                 
-                elif decision == "RETRY":
+                elif result == "RETRY":
                     print("🔄 Retrying execution with same plan...")
-                    # Keep the same analysis and plan, just re-execute
                     continue
                 
-                elif decision == "ADJUST":
+                elif result == "ADJUST":
                     print("🔧 Adjusting plan for next iteration...")
                     # Clear plan to force re-planning
                     if 'plan' in self.context:
                         del self.context['plan']
                     continue
                 
+                elif result.startswith("ERROR"):
+                    print(f"❌ {result}")
+                    continue
+                    
             except Exception as e:
                 print(f"❌ Error in iteration {self.current_iteration}: {e}")
                 if self.current_iteration >= self.max_iterations:
@@ -1353,9 +1332,6 @@ async def main():
     print("🎯 Agno 2.0 TPER Framework")
     print("=" * 50)
     
-    # Initialize workflow
-    workflow = TPERWorkflow(name="TPER_Workflow", description="Think-Plan-Execute-Review Framework")
-    
     try:
         while True:
             print("\n" + "=" * 50)
@@ -1368,19 +1344,27 @@ async def main():
                 print("Please enter a valid request.")
                 continue
             
-            # Run TPER workflow
-            result = await workflow.run(user_input)
+            # Initialize workflow for each request
+            workflow = TPERWorkflow(
+                name="TPER_Workflow", 
+                description="Think-Plan-Execute-Review Framework"
+            )
+            
+            # Run TPER workflow with iterations
+            result = await workflow.run_with_iterations(user_input)
             print("\n" + "=" * 50)
             print("📋 FINAL RESULTS")
             print("=" * 50)
             print(result)
             
+            # Cleanup
+            await workflow.cleanup()
+            
     except KeyboardInterrupt:
         print("\n👋 Goodbye!")
     
-    finally:
-        # Cleanup
-        await workflow.cleanup()
+    except Exception as e:
+        print(f"❌ Application error: {e}")
 
 
 if __name__ == "__main__":
@@ -1392,83 +1376,20 @@ if __name__ == "__main__":
     # Run the application
     asyncio.run(main())
 
-Fixed init.py files
-Create these empty __init__.py files:
-
-__init__.py (root):
-
-# Agno 2.0 TPER Framework
-
-agents/__init__.py:
-
-from .think_agent import ThinkAgent
-from .plan_agent import PlanAgent
-from .execute_agent import ExecuteAgent
-from .review_agent import ReviewAgent
-
-__all__ = ['ThinkAgent', 'PlanAgent', 'ExecuteAgent', 'ReviewAgent']
-
-tools/__init__.py:
-
-# Tools package
-
-tools/builtintools/__init__.py:
-
-from .duckduckgo_tool import DuckDuckGoBuiltinTool
-from .wikipedia_tool import WikipediaBuiltinTool
-from .python_tool import PythonBuiltinTool
-from .file_tool import FileBuiltinTool
-from .calculator_tool import CalculatorBuiltinTool
-
-__all__ = [
-    'DuckDuckGoBuiltinTool',
-    'WikipediaBuiltinTool', 
-    'PythonBuiltinTool',
-    'FileBuiltinTool',
-    'CalculatorBuiltinTool'
-]
-
-tools/mcpserver/__init__.py:
-
-from .github_mcp import GitHubMCPTool
-
-__all__ = ['GitHubMCPTool']
-
-tools/customagents/__init__.py:
-
-from .formatting_agent import FormattingAgent
-
-__all__ = ['FormattingAgent']
-
-tools/toolmanager/__init__.py:
-
-from .tool_manager import ToolManager
-
-__all__ = ['ToolManager']
-
-workflows/__init__.py:
-
-from .tper_workflow import TPERWorkflow
-
-__all__ = ['TPERWorkflow']
-
 Key Changes Made:
-Fixed Import Issues: Removed relative imports and used absolute imports
-Proper Workflow Integration: Used Agno 2.0's Workflow, Step, and StepOutput classes
-Step-based Architecture: Each TPER phase is now a proper Step with defined functions
-Async Support: Proper async/await handling for tools that require it
-Context Management: Workflow context is maintained across steps
+Fixed Step Creation: Used executor parameter instead of function for custom functions
+Proper StepInput/StepOutput: Used the correct interfaces for data flow between steps
+Workflow Inheritance: Properly inherited from Workflow class and called super().__init__()
+Context Management: Maintained context across steps using instance variables
+Async Support: Proper async handling for tools that require it
 Error Handling: Better error handling within the workflow system
-Modular Structure: Proper package structure with __init__.py files
+Iteration Logic: Moved iteration logic outside the core workflow to work with Agno 2.0's execution model
 Usage:
-Set up environment:
+Set environment variables:
 export OPENAI_API_KEY="your-openai-api-key"
 export GITHUB_TOKEN="your-github-token"  # Optional
-
-Install dependencies:
-pip install -r requirements.txt
 
 Run the framework:
 python main.py
 
-Now the TPER framework properly uses Agno 2.0's workflow system with Step and StepOutput components, and the import issues are resolved!
+Now the TPER framework properly uses Agno 2.0's workflow system with correct Step definitions using executor for custom functions, and the workflow should run without the import and Step initialization errors!

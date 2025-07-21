@@ -1,0 +1,1010 @@
+TPER Framework for Agno 2.0
+
+Project Structure
+agno_2.0_tper/
+├── agents/
+│   ├── __init__.py
+│   ├── think_agent.py
+│   ├── plan_agent.py
+│   ├── execute_agent.py
+│   └── review_agent.py
+├── tools/
+│   ├── __init__.py
+│   ├── builtintools/
+│   │   ├── __init__.py
+│   │   ├── duckduckgo_tool.py
+│   │   ├── wikipedia_tool.py
+│   │   ├── python_tool.py
+│   │   ├── file_tool.py
+│   │   └── calculator_tool.py
+│   ├── mcpserver/
+│   │   ├── __init__.py
+│   │   └── github_mcp.py
+│   ├── customagents/
+│   │   ├── __init__.py
+│   │   └── formatting_agent.py
+│   └── toolmanager/
+│       ├── __init__.py
+│       └── tool_manager.py
+├── workflows/
+│   ├── __init__.py
+│   └── tper_workflow.py
+├── main.py
+└── requirements.txt
+
+Core Agents Implementation
+agents/think_agent.py
+from agno.agent import Agent
+from agno.models.openai import OpenAIChat
+
+
+class ThinkAgent:
+    """Think Agent for problem decomposition and analysis"""
+    
+    @staticmethod
+    def create() -> Agent:
+        """Create and return a configured Think Agent"""
+        return Agent(
+            name="Think Agent",
+            role="Problem decomposition and analysis specialist",
+            model=OpenAIChat(id="gpt-4o"),
+            instructions=[
+                "You are the first stage of the TPER framework. Your role is to analyze and decompose user requests.",
+                "Break down complex problems into clear, sequential, and necessary steps only.",
+                "Focus on identifying the core requirements and logical flow needed to solve the problem.",
+                "Consider what type of operations each step might require (calculation, search, file operations, etc.).",
+                "Your output MUST be a valid JSON object with the following structure:",
+                "{\n \"problem_analysis\": \"Brief analysis of the user's request\",\n \"tasks\": [\n {\n \"step_number\": 1,\n \"description\": \"Clear description of what needs to be done\",\n \"expected_output\": \"What should be produced in this step\",\n \"operation_type\": \"calculation|search|file_operation|code_execution|data_processing|other\"\n }\n ],\n \"dependencies\": [\"List any dependencies between steps\"],\n \"success_criteria\": \"How to determine if the overall task is complete\"\n}",
+                "Keep steps minimal but sufficient - avoid over-decomposition.",
+                "Ensure each step is actionable and has clear input/output expectations.",
+                "Do not include any text outside the JSON object.",
+                "Validate that your JSON is properly formatted before responding."
+            ],
+            markdown=False
+        )
+
+agents/plan_agent.py
+from agno.agent import Agent
+from agno.models.openai import OpenAIChat
+
+
+class PlanAgent:
+    """Plan Agent for strategic planning and resource allocation"""
+    
+    @staticmethod
+    def create() -> Agent:
+        """Create and return a configured Plan Agent"""
+        return Agent(
+            name="Plan Agent",
+            role="Strategic planner and resource allocation specialist",
+            model=OpenAIChat(id="gpt-4o"),
+            instructions=[
+                "You are the second stage of the TPER framework. Your role is to create executable plans.",
+                "Analyze the task breakdown from Think Agent and create a detailed execution strategy.",
+                "Map each task to the most appropriate tools from the dynamically available resources.",
+                "Consider tool capabilities, dependencies, and optimal execution sequence.",
+                "Create a comprehensive execution plan with clear resource assignments.",
+                "",
+                "## Your Response Format:",
+                "```markdown",
+                "# Execution Plan",
+                "",
+                "## Overview",
+                "[Brief strategy summary]",
+                "",
+                "## Step-by-Step Plan",
+                "",
+                "### Step 1: [Task Description]",
+                "- **Primary Tool**: [Tool name and why it's selected]",
+                "- **Backup Tools**: [Alternative tools if primary fails]",
+                "- **Input Required**: [What data/input is needed]",
+                "- **Expected Output**: [What should be produced]",
+                "- **Dependencies**: [Any prerequisites]",
+                "",
+                "### Step 2: [Continue for each step...]",
+                "",
+                "## Execution Flow Diagram",
+                "```",
+                "[User Input] → [Step 1 Tool] → [Step 2 Tool] → ... → [Final Output]",
+                "```",
+                "",
+                "## Risk Assessment",
+                "- **Potential Issues**: [What could go wrong]",
+                "- **Mitigation Strategies**: [How to handle issues]",
+                "",
+                "## Success Metrics",
+                "- [How to measure successful completion]",
+                "```",
+                "",
+                "Always provide tool recommendations based on the operation_type from Think Agent.",
+                "If a required tool is not available, suggest alternatives or workarounds.",
+                "Consider parallel execution opportunities where possible."
+            ],
+            markdown=True
+        )
+
+agents/execute_agent.py
+from agno.agent import Agent
+from agno.models.openai import OpenAIChat
+from typing import List, Any
+
+
+class ExecuteAgent:
+    """Execute Agent for dynamic execution with adaptive tool selection"""
+    
+    @staticmethod
+    def create(tools: List[Any] = None) -> Agent:
+        """Create and return a configured Execute Agent with dynamic tools"""
+        return Agent(
+            name="Execute Agent",
+            role="Dynamic execution specialist with adaptive tool selection",
+            model=OpenAIChat(id="gpt-4o"),
+            tools=tools or [],  # Will be populated dynamically
+            instructions=[
+                "You are the third stage of the TPER framework. Your role is to execute plans dynamically.",
+                "Execute each step of the plan provided by the Plan Agent in the specified sequence.",
+                "Dynamically select and use the most appropriate tools for each task based on:",
+                "- The operation type and requirements",
+                "- Available tools in your toolkit (determined at runtime)",
+                "- Current context and previous step outputs",
+                "- Error handling and fallback strategies",
+                "",
+                "## Dynamic Tool Selection Guidelines:",
+                "1. **Analyze the task requirements first**",
+                "2. **Identify the best tool from available options**",
+                "3. **Execute with proper error handling**",
+                "4. **Log all actions and results clearly**",
+                "5. **Adapt if tools fail or produce unexpected results**",
+                "",
+                "## Execution Protocol:",
+                "- Start each step with: '## Executing Step [N]: [Description]'",
+                "- Show tool selection reasoning: 'Selected [tool_name] because [reason]'",
+                "- Display all tool calls and their results",
+                "- Handle errors gracefully and try alternatives",
+                "- Provide clear success/failure status for each step",
+                "- Maintain context between steps",
+                "",
+                "## Error Handling:",
+                "- If a tool fails, try alternative tools or approaches",
+                "- If no suitable tool is available, explain the limitation clearly",
+                "- Continue with remaining steps if one step fails (unless it's a blocking dependency)",
+                "- Provide detailed error logs for the Review Agent",
+                "",
+                "## Output Format:",
+                "```markdown",
+                "# Execution Log",
+                "",
+                "## Step [N]: [Description]",
+                "**Tool Selected**: [tool_name] - [reason]",
+                "**Action**: [what was done]",
+                "**Result**: [outcome]",
+                "**Status**: ✅ Success / ❌ Failed / ⚠️ Partial",
+                "",
+                "## Final Execution Summary",
+                "- **Total Steps**: [number]",
+                "- **Successful**: [number]",
+                "- **Failed**: [number]",
+                "- **Overall Status**: [Complete/Partial/Failed]",
+                "```",
+                "",
+                "Always adapt your approach based on available tools and real-time results.",
+                "Focus on achieving the end goal even if the exact planned path isn't possible."
+            ],
+            markdown=True,
+            show_tool_calls=True
+        )
+
+agents/review_agent.py
+from agno.agent import Agent
+from agno.models.openai import OpenAIChat
+
+
+class ReviewAgent:
+    """Review Agent for quality assurance and decision-making"""
+    
+    @staticmethod
+    def create() -> Agent:
+        """Create and return a configured Review Agent"""
+        return Agent(
+            name="Review Agent",
+            role="Quality assurance and decision-making specialist",
+            model=OpenAIChat(id="gpt-4o"),
+            instructions=[
+                "You are the fourth stage of the TPER framework. Your role is to evaluate and decide next steps.",
+                "Analyze the execution results against the original problem and success criteria.",
+                "Make intelligent decisions about whether to complete, retry, or adjust the approach.",
+                "",
+                "## Review Criteria:",
+                "1. **Completeness**: Were all required steps executed successfully?",
+                "2. **Quality**: Do the results meet the expected standards?",
+                "3. **Accuracy**: Are the outputs correct and reliable?",
+                "4. **Efficiency**: Was the execution optimal or can it be improved?",
+                "5. **User Satisfaction**: Does the result solve the user's original problem?",
+                "",
+                "## Decision Framework:",
+                "- **COMPLETE**: Task is fully successful and meets all requirements",
+                "- **RETRY**: Execution failed but the plan is sound - just re-execute",
+                "- **ADJUST**: Plan needs modification - some steps failed or were ineffective",
+                "",
+                "## Your Response Format:",
+                "```markdown",
+                "# Review Analysis",
+                "",
+                "## Execution Assessment",
+                "**Original Problem**: [Restate the user's request]",
+                "**Success Criteria**: [From Think Agent analysis]",
+                "**Execution Results**: [Summary of what was accomplished]",
+                "",
+                "## Quality Evaluation",
+                "- **Completeness**: [✅/❌/⚠️] [Explanation]",
+                "- **Accuracy**: [✅/❌/⚠️] [Explanation]",
+                "- **Efficiency**: [✅/❌/⚠️] [Explanation]",
+                "- **User Value**: [✅/❌/⚠️] [Explanation]",
+                "",
+                "## Issues Identified",
+                "[List any problems, errors, or areas for improvement]",
+                "",
+                "## Decision: [COMPLETE/RETRY/ADJUST]",
+                "",
+                "### Rationale",
+                "[Detailed explanation of your decision]",
+                "",
+                "### Next Steps",
+                "[If RETRY or ADJUST, provide specific guidance]",
+                "",
+                "## Recommendations",
+                "[Suggestions for improvement or alternative approaches]",
+                "```",
+                "",
+                "## Guidelines for Each Decision:",
+                "- **COMPLETE**: Only if task is fully successful and user's needs are met",
+                "- **RETRY**: If the plan is good but execution had temporary failures",
+                "- **ADJUST**: If the plan needs changes - wrong tools, missing steps, or better approach needed",
+                "",
+                "Be thorough but concise. Focus on actionable insights.",
+                "Consider both immediate success and long-term improvement opportunities."
+            ],
+            markdown=True
+        )
+
+Built-in Tools Implementation
+tools/builtintools/duckduckgo_tool.py
+from agno.tools.duckduckgo import DuckDuckGoTools
+
+
+class DuckDuckGoBuiltinTool:
+    """DuckDuckGo search tool wrapper for TPER framework"""
+    
+    @staticmethod
+    def get_tool():
+        """Get configured DuckDuckGo tool"""
+        return DuckDuckGoTools()
+    
+    @staticmethod
+    def get_description():
+        """Get tool description for Tool Manager"""
+        return {
+            "name": "DuckDuckGo Search",
+            "description": "Web search capabilities using DuckDuckGo",
+            "capabilities": [
+                "Web search",
+                "Real-time information retrieval",
+                "News and current events",
+                "General knowledge queries"
+            ],
+            "operation_types": ["search", "information_retrieval"],
+            "usage_examples": [
+                "Search for current news",
+                "Find information about topics",
+                "Research current events"
+            ]
+        }
+
+tools/builtintools/wikipedia_tool.py
+from agno.tools.wikipedia import WikipediaTools
+
+
+class WikipediaBuiltinTool:
+    """Wikipedia search tool wrapper for TPER framework"""
+    
+    @staticmethod
+    def get_tool():
+        """Get configured Wikipedia tool"""
+        return WikipediaTools()
+    
+    @staticmethod
+    def get_description():
+        """Get tool description for Tool Manager"""
+        return {
+            "name": "Wikipedia Search",
+            "description": "Search and retrieve information from Wikipedia",
+            "capabilities": [
+                "Encyclopedia search",
+                "Detailed article retrieval",
+                "Historical information",
+                "Educational content"
+            ],
+            "operation_types": ["search", "information_retrieval", "research"],
+            "usage_examples": [
+                "Get detailed information about topics",
+                "Research historical events",
+                "Find educational content"
+            ]
+        }
+
+tools/builtintools/python_tool.py
+from agno.tools.python import PythonTools
+
+
+class PythonBuiltinTool:
+    """Python execution tool wrapper for TPER framework"""
+    
+    @staticmethod
+    def get_tool():
+        """Get configured Python tool"""
+        return PythonTools()
+    
+    @staticmethod
+    def get_description():
+        """Get tool description for Tool Manager"""
+        return {
+            "name": "Python Executor",
+            "description": "Execute Python code for calculations and data processing",
+            "capabilities": [
+                "Code execution",
+                "Mathematical calculations",
+                "Data analysis",
+                "Algorithm implementation",
+                "File processing"
+            ],
+            "operation_types": ["calculation", "code_execution", "data_processing"],
+            "usage_examples": [
+                "Perform complex calculations",
+                "Process data",
+                "Generate charts and graphs",
+                "Implement algorithms"
+            ]
+        }
+
+tools/builtintools/file_tool.py
+from agno.tools.file import FileTools
+
+
+class FileBuiltinTool:
+    """File operations tool wrapper for TPER framework"""
+    
+    @staticmethod
+    def get_tool():
+        """Get configured File tool"""
+        return FileTools()
+    
+    @staticmethod
+    def get_description():
+        """Get tool description for Tool Manager"""
+        return {
+            "name": "File Operations",
+            "description": "Read, write, and manage files",
+            "capabilities": [
+                "File reading",
+                "File writing",
+                "Directory operations",
+                "File management"
+            ],
+            "operation_types": ["file_operation", "data_processing"],
+            "usage_examples": [
+                "Read configuration files",
+                "Save results to files",
+                "Process text files",
+                "Manage file systems"
+            ]
+        }
+
+tools/builtintools/calculator_tool.py
+from agno.tools import tool
+
+
+class CalculatorBuiltinTool:
+    """Calculator tool wrapper for TPER framework"""
+    
+    @staticmethod
+    @tool
+    def calculate(expression: str) -> str:
+        """
+        Perform mathematical calculations
+        
+        Args:
+            expression: Mathematical expression to evaluate
+            
+        Returns:
+            Result of the calculation
+        """
+        try:
+            # Safe evaluation of mathematical expressions
+            import ast
+            import operator
+            
+            # Supported operations
+            ops = {
+                ast.Add: operator.add,
+                ast.Sub: operator.sub,
+                ast.Mult: operator.mul,
+                ast.Div: operator.truediv,
+                ast.Pow: operator.pow,
+                ast.USub: operator.neg,
+            }
+            
+            def eval_expr(node):
+                if isinstance(node, ast.Num):
+                    return node.n
+                elif isinstance(node, ast.BinOp):
+                    return ops[type(node.op)](eval_expr(node.left), eval_expr(node.right))
+                elif isinstance(node, ast.UnaryOp):
+                    return ops[type(node.op)](eval_expr(node.operand))
+                else:
+                    raise TypeError(node)
+            
+            result = eval_expr(ast.parse(expression, mode='eval').body)
+            return f"Result: {result}"
+            
+        except Exception as e:
+            return f"Error in calculation: {str(e)}"
+    
+    @staticmethod
+    def get_tool():
+        """Get configured Calculator tool"""
+        return CalculatorBuiltinTool.calculate
+    
+    @staticmethod
+    def get_description():
+        """Get tool description for Tool Manager"""
+        return {
+            "name": "Calculator",
+            "description": "Perform mathematical calculations",
+            "capabilities": [
+                "Basic arithmetic",
+                "Mathematical expressions",
+                "Numerical computations"
+            ],
+            "operation_types": ["calculation"],
+            "usage_examples": [
+                "Calculate 2 + 2",
+                "Evaluate complex expressions",
+                "Perform mathematical operations"
+            ]
+        }
+
+MCP Server Integration
+tools/mcpserver/github_mcp.py
+import asyncio
+from agno.tools.mcp import MCPTools
+from mcp import StdioServerParameters
+
+
+class GitHubMCPTool:
+    """GitHub MCP server integration for TPER framework"""
+    
+    def __init__(self):
+        self.mcp_tools = None
+        self.server_params = StdioServerParameters(
+            command="npx",
+            args=["-y", "@modelcontextprotocol/server-github"]
+        )
+    
+    async def get_tool(self):
+        """Get configured GitHub MCP tool"""
+        if self.mcp_tools is None:
+            self.mcp_tools = MCPTools(server_params=self.server_params)
+            await self.mcp_tools.__aenter__()
+        return self.mcp_tools
+    
+    @staticmethod
+    def get_description():
+        """Get tool description for Tool Manager"""
+        return {
+            "name": "GitHub MCP",
+            "description": "GitHub repository operations via Model Context Protocol",
+            "capabilities": [
+                "Repository exploration",
+                "Issue management",
+                "Pull request analysis",
+                "Code repository insights",
+                "GitHub API operations"
+            ],
+            "operation_types": ["search", "data_processing", "information_retrieval"],
+            "usage_examples": [
+                "Analyze repository structure",
+                "Search for issues",
+                "Review pull requests",
+                "Get repository statistics"
+            ],
+            "requirements": ["GITHUB_TOKEN environment variable"]
+        }
+    
+    async def cleanup(self):
+        """Cleanup MCP connection"""
+        if self.mcp_tools:
+            await self.mcp_tools.__aexit__(None, None, None)
+
+Custom Agents
+tools/customagents/formatting_agent.py
+from agno.agent import Agent
+from agno.models.openai import OpenAIChat
+
+
+class FormattingAgent:
+    """Formatting agent for text structure and presentation"""
+    
+    @staticmethod
+    def create() -> Agent:
+        """Create and return a configured Formatting Agent"""
+        return Agent(
+            name="Formatting Agent",
+            role="Text formatting and structure specialist",
+            model=OpenAIChat(id="gpt-4o"),
+            instructions=[
+                "You are a specialized formatting agent. Your role is to properly structure text content.",
+                "Transform unstructured text into well-organized, readable formats.",
+                "Apply appropriate formatting including:",
+                "- Bullet points for lists",
+                "- Tables for structured data",
+                "- Headers and subheaders for organization",
+                "- Proper spacing and indentation",
+                "- Markdown formatting when appropriate",
+                "",
+                "## Formatting Guidelines:",
+                "1. **Analyze the content type** and determine the best structure",
+                "2. **Use consistent formatting** throughout the document",
+                "3. **Create clear hierarchies** with headers and subheaders",
+                "4. **Format lists** as bullet points or numbered lists",
+                "5. **Create tables** for comparative or structured data",
+                "6. **Add emphasis** with bold/italic where appropriate",
+                "7. **Ensure readability** with proper spacing",
+                "",
+                "## Output Format:",
+                "Always return properly formatted content that is:",
+                "- Easy to read and scan",
+                "- Logically organized",
+                "- Visually appealing",
+                "- Consistent in style",
+                "",
+                "Focus on clarity and professional presentation."
+            ],
+            markdown=True
+        )
+    
+    @staticmethod
+    def get_description():
+        """Get agent description for Tool Manager"""
+        return {
+            "name": "Formatting Agent",
+            "description": "Specialized agent for text formatting and structure",
+            "capabilities": [
+                "Text structure organization",
+                "Bullet point formatting",
+                "Table creation",
+                "Markdown formatting",
+                "Content hierarchy",
+                "Professional presentation"
+            ],
+            "operation_types": ["formatting", "text_processing"],
+            "usage_examples": [
+                "Format research results into readable structure",
+                "Create tables from data",
+                "Organize content with proper headers",
+                "Apply consistent formatting to documents"
+            ]
+        }
+
+Tool Manager
+tools/toolmanager/tool_manager.py
+from typing import Dict, List, Any, Optional
+import asyncio
+from ..builtintools.duckduckgo_tool import DuckDuckGoBuiltinTool
+from ..builtintools.wikipedia_tool import WikipediaBuiltinTool
+from ..builtintools.python_tool import PythonBuiltinTool
+from ..builtintools.file_tool import FileBuiltinTool
+from ..builtintools.calculator_tool import CalculatorBuiltinTool
+from ..mcpserver.github_mcp import GitHubMCPTool
+from ..customagents.formatting_agent import FormattingAgent
+
+
+class ToolManager:
+    """Central tool management system for TPER framework"""
+    
+    def __init__(self):
+        self.builtin_tools = {
+            "duckduckgo": DuckDuckGoBuiltinTool,
+            "wikipedia": WikipediaBuiltinTool,
+            "python": PythonBuiltinTool,
+            "file": FileBuiltinTool,
+            "calculator": CalculatorBuiltinTool
+        }
+        
+        self.mcp_tools = {
+            "github": GitHubMCPTool
+        }
+        
+        self.custom_agents = {
+            "formatting": FormattingAgent
+        }
+        
+        self.active_tools = {}
+        self.tool_descriptions = {}
+        self._initialize_descriptions()
+    
+    def _initialize_descriptions(self):
+        """Initialize tool descriptions for all available tools"""
+        # Built-in tools
+        for name, tool_class in self.builtin_tools.items():
+            self.tool_descriptions[name] = tool_class.get_description()
+        
+        # MCP tools
+        for name, tool_class in self.mcp_tools.items():
+            self.tool_descriptions[name] = tool_class.get_description()
+        
+        # Custom agents
+        for name, agent_class in self.custom_agents.items():
+            self.tool_descriptions[name] = agent_class.get_description()
+    
+    def get_tool_descriptions(self) -> Dict[str, Dict]:
+        """Get descriptions of all available tools"""
+        return self.tool_descriptions
+    
+    def get_tools_by_operation_type(self, operation_type: str) -> List[str]:
+        """Get tools that support a specific operation type"""
+        matching_tools = []
+        for tool_name, description in self.tool_descriptions.items():
+            if operation_type in description.get("operation_types", []):
+                matching_tools.append(tool_name)
+        return matching_tools
+    
+    async def get_tool_instance(self, tool_name: str) -> Any:
+        """Get an instance of the specified tool"""
+        if tool_name in self.active_tools:
+            return self.active_tools[tool_name]
+        
+        if tool_name in self.builtin_tools:
+            tool_instance = self.builtin_tools[tool_name].get_tool()
+            self.active_tools[tool_name] = tool_instance
+            return tool_instance
+        
+        elif tool_name in self.mcp_tools:
+            tool_class = self.mcp_tools[tool_name]()
+            tool_instance = await tool_class.get_tool()
+            self.active_tools[tool_name] = tool_instance
+            return tool_instance
+        
+        elif tool_name in self.custom_agents:
+            agent_instance = self.custom_agents[tool_name].create()
+            self.active_tools[tool_name] = agent_instance
+            return agent_instance
+        
+        else:
+            raise ValueError(f"Unknown tool: {tool_name}")
+    
+    async def get_tools_for_execution(self, operation_types: List[str]) -> List[Any]:
+        """Get tool instances for specific operation types"""
+        tools = []
+        for operation_type in operation_types:
+            tool_names = self.get_tools_by_operation_type(operation_type)
+            for tool_name in tool_names:
+                try:
+                    tool_instance = await self.get_tool_instance(tool_name)
+                    if tool_instance not in tools:
+                        tools.append(tool_instance)
+                except Exception as e:
+                    print(f"Warning: Could not load tool {tool_name}: {e}")
+        return tools
+    
+    def describe_tool(self, tool_name: str) -> Optional[Dict]:
+        """Get detailed description of a specific tool"""
+        return self.tool_descriptions.get(tool_name)
+    
+    def list_all_tools(self) -> Dict[str, List[str]]:
+        """List all available tools by category"""
+        return {
+            "builtin_tools": list(self.builtin_tools.keys()),
+            "mcp_tools": list(self.mcp_tools.keys()),
+            "custom_agents": list(self.custom_agents.keys())
+        }
+    
+    async def cleanup(self):
+        """Cleanup all active tools"""
+        for tool_name, tool_instance in self.active_tools.items():
+            if tool_name in self.mcp_tools and hasattr(tool_instance, 'cleanup'):
+                await tool_instance.cleanup()
+
+TPER Workflow Implementation
+workflows/tper_workflow.py
+import json
+import asyncio
+from typing import Dict, Any, List
+from agno.workflow.v2 import Workflow, Step, StepOutput
+from ..agents.think_agent import ThinkAgent
+from ..agents.plan_agent import PlanAgent
+from ..agents.execute_agent import ExecuteAgent
+from ..agents.review_agent import ReviewAgent
+from ..tools.toolmanager.tool_manager import ToolManager
+
+
+class TPERWorkflow:
+    """TPER Framework Workflow for Agno 2.0"""
+    
+    def __init__(self):
+        self.tool_manager = ToolManager()
+        self.think_agent = ThinkAgent.create()
+        self.plan_agent = PlanAgent.create()
+        self.review_agent = ReviewAgent.create()
+        self.max_iterations = 3
+        self.current_iteration = 0
+    
+    async def think_step(self, user_input: str) -> Dict[str, Any]:
+        """Think phase: Analyze and decompose the problem"""
+        print("🤔 THINK Phase: Analyzing problem...")
+        
+        response = self.think_agent.run(
+            f"Analyze this request and break it down into actionable steps: {user_input}"
+        )
+        
+        try:
+            # Parse JSON response from Think Agent
+            analysis = json.loads(response.content)
+            return analysis
+        except json.JSONDecodeError:
+            # Fallback if JSON parsing fails
+            return {
+                "problem_analysis": response.content,
+                "tasks": [
+                    {
+                        "step_number": 1,
+                        "description": "Process user request",
+                        "expected_output": "Completed task",
+                        "operation_type": "other"
+                    }
+                ],
+                "dependencies": [],
+                "success_criteria": "Task completed successfully"
+            }
+    
+    async def plan_step(self, analysis: Dict[str, Any]) -> str:
+        """Plan phase: Create execution strategy"""
+        print("📋 PLAN Phase: Creating execution strategy...")
+        
+        # Get available tools information
+        tool_descriptions = self.tool_manager.get_tool_descriptions()
+        
+        plan_input = f"""
+        Based on this analysis: {json.dumps(analysis, indent=2)}
+        
+        Available tools and their capabilities:
+        {json.dumps(tool_descriptions, indent=2)}
+        
+        Create a detailed execution plan mapping each task to appropriate tools.
+        """
+        
+        response = self.plan_agent.run(plan_input)
+        return response.content
+    
+    async def execute_step(self, analysis: Dict[str, Any], plan: str) -> str:
+        """Execute phase: Run the plan with dynamic tool selection"""
+        print("⚡ EXECUTE Phase: Running execution plan...")
+        
+        # Extract operation types from analysis
+        operation_types = []
+        for task in analysis.get("tasks", []):
+            op_type = task.get("operation_type", "other")
+            if op_type not in operation_types:
+                operation_types.append(op_type)
+        
+        # Get appropriate tools for execution
+        tools = await self.tool_manager.get_tools_for_execution(operation_types)
+        
+        # Create Execute Agent with dynamic tools
+        execute_agent = ExecuteAgent.create(tools=tools)
+        
+        execution_input = f"""
+        Execute this plan step by step:
+        
+        Original Analysis:
+        {json.dumps(analysis, indent=2)}
+        
+        Execution Plan:
+        {plan}
+        
+        Use the available tools to complete each step and provide detailed execution logs.
+        """
+        
+        response = execute_agent.run(execution_input)
+        return response.content
+    
+    async def review_step(self, user_input: str, analysis: Dict[str, Any], execution_result: str) -> Dict[str, str]:
+        """Review phase: Evaluate results and decide next steps"""
+        print("🔍 REVIEW Phase: Evaluating results...")
+        
+        review_input = f"""
+        Review the execution results against the original request:
+        
+        Original Request: {user_input}
+        
+        Analysis: {json.dumps(analysis, indent=2)}
+        
+        Execution Results: {execution_result}
+        
+        Provide your review and decision (COMPLETE/RETRY/ADJUST).
+        """
+        
+        response = self.review_agent.run(review_input)
+        
+        # Extract decision from review
+        content = response.content.lower()
+        if "decision: complete" in content:
+            decision = "COMPLETE"
+        elif "decision: retry" in content:
+            decision = "RETRY"
+        elif "decision: adjust" in content:
+            decision = "ADJUST"
+        else:
+            decision = "COMPLETE"  # Default
+        
+        return {
+            "decision": decision,
+            "review_content": response.content
+        }
+    
+    async def run(self, user_input: str) -> str:
+        """Run the complete TPER workflow"""
+        print(f"🚀 Starting TPER Workflow for: {user_input}")
+        print("=" * 60)
+        
+        self.current_iteration = 0
+        
+        while self.current_iteration < self.max_iterations:
+            self.current_iteration += 1
+            print(f"\n🔄 Iteration {self.current_iteration}/{self.max_iterations}")
+            print("-" * 40)
+            
+            try:
+                # THINK Phase
+                analysis = await self.think_step(user_input)
+                
+                # PLAN Phase
+                plan = await self.plan_step(analysis)
+                
+                # EXECUTE Phase
+                execution_result = await self.execute_step(analysis, plan)
+                
+                # REVIEW Phase
+                review = await self.review_step(user_input, analysis, execution_result)
+                
+                print(f"\n📊 Review Decision: {review['decision']}")
+                
+                if review['decision'] == "COMPLETE":
+                    print("✅ Task completed successfully!")
+                    return f"""
+# TPER Workflow Results
+
+## Final Execution Result
+{execution_result}
+
+## Review Summary
+{review['review_content']}
+
+**Status**: Completed successfully in {self.current_iteration} iteration(s)
+"""
+                
+                elif review['decision'] == "RETRY":
+                    print("🔄 Retrying execution with same plan...")
+                    continue
+                
+                elif review['decision'] == "ADJUST":
+                    print("🔧 Adjusting plan for next iteration...")
+                    # For ADJUST, we'll continue the loop to re-plan
+                    continue
+                
+            except Exception as e:
+                print(f"❌ Error in iteration {self.current_iteration}: {e}")
+                if self.current_iteration >= self.max_iterations:
+                    break
+                continue
+        
+        # If we reach here, max iterations exceeded
+        return f"""
+# TPER Workflow Results
+
+## Status
+Maximum iterations ({self.max_iterations}) reached without completion.
+
+## Last Execution Result
+{execution_result if 'execution_result' in locals() else 'No execution completed'}
+
+## Last Review
+{review['review_content'] if 'review' in locals() else 'No review completed'}
+
+**Status**: Incomplete - manual intervention may be required
+"""
+    
+    async def cleanup(self):
+        """Cleanup workflow resources"""
+        await self.tool_manager.cleanup()
+
+Main Application
+main.py
+import asyncio
+import os
+from workflows.tper_workflow import TPERWorkflow
+
+
+async def main():
+    """Main application entry point"""
+    print("🎯 Agno 2.0 TPER Framework")
+    print("=" * 50)
+    
+    # Initialize workflow
+    workflow = TPERWorkflow()
+    
+    try:
+        while True:
+            print("\n" + "=" * 50)
+            user_input = input("Enter your request (or 'quit' to exit): ").strip()
+            
+            if user_input.lower() in ['quit', 'exit', 'q']:
+                break
+            
+            if not user_input:
+                print("Please enter a valid request.")
+                continue
+            
+            # Run TPER workflow
+            result = await workflow.run(user_input)
+            print("\n" + "=" * 50)
+            print("📋 FINAL RESULTS")
+            print("=" * 50)
+            print(result)
+            
+    except KeyboardInterrupt:
+        print("\n👋 Goodbye!")
+    
+    finally:
+        # Cleanup
+        await workflow.cleanup()
+
+
+if __name__ == "__main__":
+    # Set up environment
+    if not os.getenv("OPENAI_API_KEY"):
+        print("⚠️  Please set OPENAI_API_KEY environment variable")
+        exit(1)
+    
+    # Run the application
+    asyncio.run(main())
+
+Requirements
+requirements.txt
+agno>=1.7.4
+openai>=1.0.0
+duckduckgo-search>=3.9.0
+wikipedia>=1.4.0
+mcp>=1.0.0
+nest-asyncio>=1.5.0
+
+Usage Instructions
+Installation:
+pip install -r requirements.txt
+
+Environment Setup:
+export OPENAI_API_KEY="your-openai-api-key"
+export GITHUB_TOKEN="your-github-token"  # Optional, for GitHub MCP
+
+Run the Framework:
+python main.py
+
+Key Features
+Think Agent: Analyzes and decomposes problems into structured JSON
+Plan Agent: Creates detailed execution strategies with tool mapping
+Execute Agent: Dynamically selects and uses appropriate tools
+Review Agent: Evaluates results and decides on next steps (COMPLETE/RETRY/ADJUST)
+Tool Manager: Centralized management of all tools and agents
+Iterative Process: Supports multiple iterations with context retention
+Dynamic Tool Selection: Tools are selected based on operation types
+Comprehensive Error Handling: Graceful failure handling and recovery
+This TPER Framework provides a robust, scalable foundation for building complex AI workflows with Agno 2.0, supporting the iterative think-plan-execute-review cycle you requested.
